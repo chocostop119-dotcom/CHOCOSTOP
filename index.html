@@ -319,11 +319,14 @@
   var CLIENT_ID_KEY = "dc_google_client_id_v1";
   var DRIVE_CONNECTED_KEY = "dc_drive_connected_v1";
   var DRIVE_EMAIL_KEY = "dc_drive_email_v1";
+  var DRIVE_TOKEN_KEY = "dc_drive_token_v1";
+  var DRIVE_TOKEN_EXPIRY_KEY = "dc_drive_token_expiry_v1";
   var DRIVE_FILE_NAME = "dessert-cart-data.json";
   var DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email";
   var googleClientId = "";
   var driveAccessToken = null;
   var driveFileId = null;
+  var driveTokenExpiry = 0;
   var driveSyncStatus = "disconnected"; // disconnected | connecting | synced | syncing | error
   var tokenClient = null;
   var driveSaveTimer = null;
@@ -922,12 +925,19 @@
 
   function handleTokenResponse(resp) {
     if (!resp || resp.error || !resp.access_token) {
+      // silent refresh failed — don't nag with a popup, just show the red badge so the user can tap to reconnect
       setSyncStatus("error");
-      showToast("Google sign-in didn't complete");
+      refreshSyncButton();
       return;
     }
     driveAccessToken = resp.access_token;
-    try { localStorage.setItem(DRIVE_CONNECTED_KEY, "1"); } catch (e) {}
+    var expiresInMs = (Number(resp.expires_in) || 3600) * 1000;
+    driveTokenExpiry = Date.now() + expiresInMs - 120000; // refresh 2 min early
+    try {
+      localStorage.setItem(DRIVE_CONNECTED_KEY, "1");
+      localStorage.setItem(DRIVE_TOKEN_KEY, driveAccessToken);
+      localStorage.setItem(DRIVE_TOKEN_EXPIRY_KEY, String(driveTokenExpiry));
+    } catch (e) {}
     setSyncStatus("syncing");
     fetchConnectedEmail();
     findOrCreateDriveFile();
@@ -956,11 +966,31 @@
     return h;
   }
 
+  // If a Drive call comes back unauthorized, the cached token is dead — clear it and
+  // try one silent refresh before giving up and showing the red "tap to reconnect" badge.
+  var handledAuthFailureOnce = false;
+  function handleAuthFailure() {
+    driveAccessToken = null;
+    try { localStorage.removeItem(DRIVE_TOKEN_KEY); localStorage.removeItem(DRIVE_TOKEN_EXPIRY_KEY); } catch (e) {}
+    if (handledAuthFailureOnce) { handledAuthFailureOnce = false; setSyncStatus("error"); refreshSyncButton(); return; }
+    handledAuthFailureOnce = true;
+    if (window.google && google.accounts && google.accounts.oauth2) {
+      connectDrive("");
+    } else {
+      setSyncStatus("error");
+      refreshSyncButton();
+    }
+  }
+
   function findOrCreateDriveFile() {
     var url = "https://www.googleapis.com/drive/v3/files?spaces=drive&q=" +
       encodeURIComponent("name = '" + DRIVE_FILE_NAME + "' and trashed = false") + "&fields=files(id,name)";
     fetch(url, { headers: driveHeaders() })
-      .then(function (r) { if (!r.ok) throw new Error("list failed " + r.status); return r.json(); })
+      .then(function (r) {
+        if (r.status === 401) { handleAuthFailure(); throw new Error("auth"); }
+        if (!r.ok) throw new Error("list failed " + r.status);
+        return r.json();
+      })
       .then(function (data) {
         if (data.files && data.files.length > 0) {
           driveFileId = data.files[0].id;
@@ -969,12 +999,16 @@
           createDriveFile();
         }
       })
-      .catch(function (err) { setSyncStatus("error"); });
+      .catch(function (err) { if (err.message !== "auth") setSyncStatus("error"); });
   }
 
   function downloadDriveFile() {
     fetch("https://www.googleapis.com/drive/v3/files/" + driveFileId + "?alt=media", { headers: driveHeaders() })
-      .then(function (r) { if (!r.ok) throw new Error("download failed " + r.status); return r.text(); })
+      .then(function (r) {
+        if (r.status === 401) { handleAuthFailure(); throw new Error("auth"); }
+        if (!r.ok) throw new Error("download failed " + r.status);
+        return r.text();
+      })
       .then(function (text) {
         var remote;
         try { remote = JSON.parse(text); } catch (e) { remote = null; }
@@ -989,9 +1023,8 @@
           render();
         }
         setSyncStatus("synced");
-        showToast("Synced from Google Drive \u2713");
       })
-      .catch(function (err) { setSyncStatus("error"); });
+      .catch(function (err) { if (err.message !== "auth") setSyncStatus("error"); });
   }
 
   function createDriveFile() {
@@ -1006,13 +1039,17 @@
       headers: driveHeaders({ "Content-Type": "multipart/related; boundary=" + boundary }),
       body: body
     })
-      .then(function (r) { if (!r.ok) throw new Error("create failed " + r.status); return r.json(); })
+      .then(function (r) {
+        if (r.status === 401) { handleAuthFailure(); throw new Error("auth"); }
+        if (!r.ok) throw new Error("create failed " + r.status);
+        return r.json();
+      })
       .then(function (data) {
         driveFileId = data.id;
         setSyncStatus("synced");
         showToast("Google Drive connected \u2713");
       })
-      .catch(function (err) { setSyncStatus("error"); });
+      .catch(function (err) { if (err.message !== "auth") setSyncStatus("error"); });
   }
 
   function scheduleDriveUpload() {
@@ -1023,6 +1060,15 @@
     driveSaveTimer = setTimeout(uploadDriveFile, 1200);
   }
 
+  // Bypasses the debounce for changes that must not be lost if the app closes right after
+  // (e.g. resetting sales data) — uploads immediately instead of waiting ~1.2s.
+  function uploadDriveFileNow() {
+    clearTimeout(driveSaveTimer);
+    if (!driveAccessToken || !driveFileId) return;
+    setSyncStatus("syncing");
+    uploadDriveFile();
+  }
+
   function uploadDriveFile() {
     if (!driveAccessToken || !driveFileId) return;
     fetch("https://www.googleapis.com/upload/drive/v3/files/" + driveFileId + "?uploadType=media", {
@@ -1031,16 +1077,36 @@
       body: currentDataSnapshot()
     })
       .then(function (r) {
+        if (r.status === 401) { handleAuthFailure(); throw new Error("auth"); }
         if (!r.ok) throw new Error("upload failed " + r.status);
         setSyncStatus("synced");
       })
-      .catch(function () { setSyncStatus("error"); });
+      .catch(function (err) { if (err.message !== "auth") setSyncStatus("error"); });
   }
 
   function tryAutoReconnect() {
     var wasConnected = false;
     try { wasConnected = localStorage.getItem(DRIVE_CONNECTED_KEY) === "1"; } catch (e) {}
     if (!wasConnected || !googleClientId) return;
+
+    var cachedToken = null, cachedExpiry = 0;
+    try {
+      cachedToken = localStorage.getItem(DRIVE_TOKEN_KEY);
+      cachedExpiry = Number(localStorage.getItem(DRIVE_TOKEN_EXPIRY_KEY) || 0);
+    } catch (e) {}
+
+    if (cachedToken && cachedExpiry > Date.now()) {
+      // Reuse the still-valid token — no Google popup, no sign-in prompt at all.
+      driveAccessToken = cachedToken;
+      driveTokenExpiry = cachedExpiry;
+      setSyncStatus("syncing");
+      refreshSyncButton();
+      findOrCreateDriveFile();
+      return;
+    }
+
+    // Token missing or expired — try one silent (invisible) refresh. Only if that
+    // genuinely fails does the badge turn red, waiting for a manual tap.
     var attempts = 0;
     var tryInit = function () {
       attempts++;
@@ -1199,9 +1265,14 @@
   function disconnectDrive() {
     driveAccessToken = null;
     driveFileId = null;
+    driveTokenExpiry = 0;
     connectedEmail = "";
-    try { localStorage.removeItem(DRIVE_CONNECTED_KEY); } catch (e) {}
-    try { localStorage.removeItem(DRIVE_EMAIL_KEY); } catch (e) {}
+    try {
+      localStorage.removeItem(DRIVE_CONNECTED_KEY);
+      localStorage.removeItem(DRIVE_EMAIL_KEY);
+      localStorage.removeItem(DRIVE_TOKEN_KEY);
+      localStorage.removeItem(DRIVE_TOKEN_EXPIRY_KEY);
+    } catch (e) {}
     setSyncStatus("disconnected");
     renderAccountBanner();
     refreshSyncButton();
@@ -1223,6 +1294,7 @@
   function resetSalesData() {
     orders = [];
     saveOrders();
+    uploadDriveFileNow();
     closeModal();
     refreshTabBadges();
     renderTabContent();

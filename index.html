@@ -63,6 +63,19 @@
   .dc-sync-dot.synced { background: var(--pistachio); }
   .dc-sync-dot.syncing { background: var(--mango); }
   .dc-sync-dot.error { background: var(--berry); }
+  .dc-sync-btn { position: relative; }
+  .dc-account-badge {
+    position: absolute; top: -4px; right: -4px; width: 16px; height: 16px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; color: #fff; border: 2px solid var(--cream);
+  }
+  .dc-account-badge-ok { background: var(--pistachio); }
+  .dc-account-badge-warn { background: var(--berry); }
+  .dc-account-banner-inner {
+    width: 100%; border: none; display: flex; align-items: center; gap: 6px;
+    padding: 7px 16px; font-size: 12px; font-weight: 600; font-family: inherit; cursor: pointer; text-align: left;
+  }
+  .dc-account-banner-ok { background: #EAF1E7; color: var(--pistachio); }
+  .dc-account-banner-warn { background: #FBEFF2; color: var(--berry-dark); }
   .dc-awning {
     height: 8px;
     background: repeating-linear-gradient(45deg, var(--berry) 0px, var(--berry) 14px, var(--cream) 14px, var(--cream) 28px);
@@ -214,6 +227,7 @@
   .dc-cart-actions { display: flex; gap: 10px; margin-top: 10px; }
   .dc-cart-actions .dc-btn-full { flex: 2; margin-top: 0; }
   .dc-btn-clear { flex: 1; color: var(--berry-dark); border-color: #F0C9D3; background: #FBEFF2; white-space: nowrap; }
+  .dc-btn-reset { color: var(--berry-dark); border-color: #F0C9D3; background: #FBEFF2; margin-top: 20px; }
 
   .dc-stat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 14px; }
   .dc-stat-card { background: var(--surface); border: 1.5px solid var(--border); border-radius: 12px; padding: 12px; }
@@ -304,8 +318,9 @@
   // ---------- Google Drive sync ----------
   var CLIENT_ID_KEY = "dc_google_client_id_v1";
   var DRIVE_CONNECTED_KEY = "dc_drive_connected_v1";
+  var DRIVE_EMAIL_KEY = "dc_drive_email_v1";
   var DRIVE_FILE_NAME = "dessert-cart-data.json";
-  var DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+  var DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email";
   var googleClientId = "";
   var driveAccessToken = null;
   var driveFileId = null;
@@ -313,6 +328,11 @@
   var tokenClient = null;
   var driveSaveTimer = null;
   var suppressNextDriveUpload = false;
+  var connectedEmail = "";
+  var EXPECTED_EMAIL = "chocostop119@gmail.com";
+  function accountMatches() {
+    return !!connectedEmail && connectedEmail.toLowerCase() === EXPECTED_EMAIL.toLowerCase();
+  }
 
   // ---------- persistence ----------
   function loadAll() {
@@ -320,6 +340,7 @@
     try { var v2 = localStorage.getItem(ORDERS_KEY); orders = v2 ? JSON.parse(v2) : []; } catch (e) { orders = []; }
     try { var v3 = localStorage.getItem(SHOP_NAME_KEY); shopName = v3 || DEFAULT_SHOP_NAME; } catch (e) { shopName = DEFAULT_SHOP_NAME; }
     try { googleClientId = localStorage.getItem(CLIENT_ID_KEY) || ""; } catch (e) { googleClientId = ""; }
+    try { connectedEmail = localStorage.getItem(DRIVE_EMAIL_KEY) || ""; } catch (e) { connectedEmail = ""; }
   }
   function saveItems() {
     try { localStorage.setItem(ITEMS_KEY, JSON.stringify(items)); }
@@ -441,9 +462,10 @@
     html += icon("store", 22) + '<h1>' + escapeHtml(shopName) + '</h1>';
     html += '    <span class="dc-header-edit-icon">' + icon("pencil", 14) + '</span>';
     html += '  </button>';
-    html += '  <button class="dc-sync-btn dc-sync-' + driveSyncStatus + '" data-action="open-sync" id="dc-sync-btn">' + icon("cloud", 18) + '</button>';
+    html += '  <button class="dc-sync-btn dc-sync-' + driveSyncStatus + '" data-action="open-sync" id="dc-sync-btn">' + icon("cloud", 18) + accountBadgeHtml() + '</button>';
     html += '</div>';
     html += '</header>';
+    html += '<div id="dc-account-banner"></div>';
     html += '<div class="dc-awning"></div>';
     html += '<main class="dc-main" id="dc-main"></main>';
     html += '<div id="dc-cartbar-slot"></div>';
@@ -456,6 +478,7 @@
     html += '<div id="dc-modal-root"></div>';
     html += '<div class="dc-toast" id="dc-toast" style="display:none;"></div>';
     app.innerHTML = html;
+    renderAccountBanner();
     renderTabContent();
   }
 
@@ -746,6 +769,8 @@
     });
     html += '</div>';
 
+    html += '<button class="dc-btn-secondary dc-btn-full dc-btn-reset" data-action="open-reset-confirm">' + icon("trash", 16) + ' Reset sales data</button>';
+
     main.innerHTML = html;
   }
 
@@ -853,6 +878,24 @@
     return "Not connected";
   }
 
+  function accountBadgeHtml() {
+    if (!connectedEmail) return "";
+    var cls = accountMatches() ? "dc-account-badge-ok" : "dc-account-badge-warn";
+    return '<span class="dc-account-badge ' + cls + '">' + icon(accountMatches() ? "check" : "x", 10) + '</span>';
+  }
+
+  function renderAccountBanner() {
+    var el = document.getElementById("dc-account-banner");
+    if (!el) return;
+    if (!connectedEmail) { el.innerHTML = ""; return; }
+    var ok = accountMatches();
+    el.innerHTML =
+      '<button class="dc-account-banner-inner ' + (ok ? "dc-account-banner-ok" : "dc-account-banner-warn") + '" data-action="open-sync">' +
+      icon(ok ? "check" : "x", 13) +
+      '<span>' + (ok ? "Signed in as " : "Wrong account signed in: ") + escapeHtml(connectedEmail) + '</span>' +
+      '</button>';
+  }
+
   function ensureTokenClient() {
     if (!window.google || !google.accounts || !google.accounts.oauth2) return null;
     if (tokenClient && tokenClient.__clientId === googleClientId) return tokenClient;
@@ -886,7 +929,25 @@
     driveAccessToken = resp.access_token;
     try { localStorage.setItem(DRIVE_CONNECTED_KEY, "1"); } catch (e) {}
     setSyncStatus("syncing");
+    fetchConnectedEmail();
     findOrCreateDriveFile();
+  }
+
+  function refreshSyncButton() {
+    var btn = document.getElementById("dc-sync-btn");
+    if (btn) btn.innerHTML = icon("cloud", 18) + accountBadgeHtml();
+  }
+
+  function fetchConnectedEmail() {
+    fetch("https://www.googleapis.com/oauth2/v3/userinfo", { headers: driveHeaders() })
+      .then(function (r) { if (!r.ok) throw new Error("userinfo failed"); return r.json(); })
+      .then(function (data) {
+        connectedEmail = data.email || "";
+        try { localStorage.setItem(DRIVE_EMAIL_KEY, connectedEmail); } catch (e) {}
+        renderAccountBanner();
+        refreshSyncButton();
+      })
+      .catch(function () { /* non-critical — banner just won't show an email */ });
   }
 
   function driveHeaders(extra) {
@@ -1116,6 +1177,11 @@
     html += '<div class="dc-modal">';
     html += '<div class="dc-modal-head"><h3>' + icon("cloud", 18) + '&nbsp;Google Drive sync</h3><button class="dc-icon-btn" data-action="close-modal">' + icon("x", 18) + '</button></div>';
     html += '<div class="dc-sync-status-row"><span class="dc-sync-dot ' + driveSyncStatus + '" id="dc-sync-modal-dot"></span><span id="dc-sync-modal-text">' + syncStatusLabel(driveSyncStatus) + '</span></div>';
+    if (connectedEmail) {
+      html += '<div class="dc-account-banner-inner ' + (accountMatches() ? "dc-account-banner-ok" : "dc-account-banner-warn") + '" style="margin-bottom:14px;">' +
+        icon(accountMatches() ? "check" : "x", 13) +
+        '<span>' + (accountMatches() ? "Signed in as " : "Wrong account: ") + escapeHtml(connectedEmail) + '</span></div>';
+    }
     html += '<div class="dc-form-field"><label>Google OAuth Client ID</label>' +
       '<input id="dc-client-id-input" value="' + escapeHtml(googleClientId) + '" placeholder="xxxxx.apps.googleusercontent.com"></div>';
     html += '<p class="dc-muted" style="margin-top:-6px;">Paste the Client ID from your Google Cloud Console (one-time setup — ask me if you need the steps).</p>';
@@ -1133,10 +1199,34 @@
   function disconnectDrive() {
     driveAccessToken = null;
     driveFileId = null;
+    connectedEmail = "";
     try { localStorage.removeItem(DRIVE_CONNECTED_KEY); } catch (e) {}
+    try { localStorage.removeItem(DRIVE_EMAIL_KEY); } catch (e) {}
     setSyncStatus("disconnected");
+    renderAccountBanner();
+    refreshSyncButton();
     closeModal();
     showToast("Disconnected from Google Drive");
+  }
+
+  function openResetConfirmModal() {
+    var html = '<div class="dc-modal-overlay" data-action="close-modal-bg">';
+    html += '<div class="dc-modal">';
+    html += '<div class="dc-modal-head"><h3>Reset sales data?</h3><button class="dc-icon-btn" data-action="close-modal">' + icon("x", 18) + '</button></div>';
+    html += '<p class="dc-muted">This permanently erases all order history — sales stats, charts, and Live Orders. Your menu items and photos are not affected. This can\u2019t be undone' + (driveAccessToken ? ", and it will also clear the copy saved in Google Drive." : ".") + '</p>';
+    html += '<div class="dc-modal-actions"><button class="dc-btn-secondary" data-action="close-modal">Cancel</button>' +
+      '<button class="dc-btn-primary dc-btn-reset-confirm" data-action="confirm-reset-sales">Yes, erase it</button></div>';
+    html += '</div></div>';
+    document.getElementById("dc-modal-root").innerHTML = html;
+  }
+
+  function resetSalesData() {
+    orders = [];
+    saveOrders();
+    closeModal();
+    refreshTabBadges();
+    renderTabContent();
+    showToast("Sales data cleared");
   }
 
   function openNameEditModal() {
@@ -1212,6 +1302,8 @@
       connectDrive("consent");
     }
     else if (action === "disconnect-drive") { disconnectDrive(); }
+    else if (action === "open-reset-confirm") { openResetConfirmModal(); }
+    else if (action === "confirm-reset-sales") { resetSalesData(); }
     else if (action === "save-shop-name") {
       var v = document.getElementById("dc-shop-name-input").value.trim();
       shopName = v || DEFAULT_SHOP_NAME;

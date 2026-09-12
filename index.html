@@ -270,6 +270,8 @@
   .dc-recent { margin-top: 16px; }
   .dc-recent h3 { font-family: 'Baloo 2', sans-serif; font-size: 16px; margin-bottom: 10px; }
   .dc-recent-row { border-bottom: 1px solid var(--border); padding: 10px 0; }
+  .dc-recent-row-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .dc-recent-edit-btn { width: 28px; height: 28px; flex-shrink: 0; }
   .dc-recent-time { font-size: 11px; color: var(--muted); font-weight: 600; margin-bottom: 2px; }
   .dc-recent-items { font-size: 13px; margin-bottom: 3px; }
   .dc-recent-meta { display: flex; justify-content: space-between; font-size: 12px; }
@@ -770,7 +772,8 @@
     recent.forEach(function (o) {
       var d = new Date(o.timestamp);
       html += '<div class="dc-recent-row">';
-      html += '<div class="dc-recent-time">' + d.toLocaleDateString("en-IN", { day: "2-digit", month: "short" }) + ' · ' + d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) + '</div>';
+      html += '<div class="dc-recent-row-top"><div class="dc-recent-time">' + d.toLocaleDateString("en-IN", { day: "2-digit", month: "short" }) + ' · ' + d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) + '</div>' +
+        '<button class="dc-icon-btn dc-recent-edit-btn" data-action="edit-order" data-id="' + o.id + '">' + icon("pencil", 15) + '</button></div>';
       html += '<div class="dc-recent-items">' + escapeHtml(o.items.map(function (li) { return li.name + " ×" + li.qty; }).join(", ")) + (o.note ? " — " + escapeHtml(o.note) : "") + '</div>';
       html += '<div class="dc-recent-meta"><span class="dc-recent-pay">' + escapeHtml(o.paymentMethod) + '</span><span class="dc-recent-total">' + currency(o.total) + '</span></div>';
       html += '</div>';
@@ -1180,6 +1183,138 @@
     renderCartBar();
   }
 
+  // ---------- Edit past order (recent orders) ----------
+  var editOrderId = null;
+  var editOrderLines = [];
+  var editOrderPayment = "Cash";
+  var editOrderNote = "";
+  var editOrderTimestamp = Date.now();
+
+  function toDatetimeLocalValue(ts) {
+    var d = new Date(ts);
+    var pad = function (n) { return String(n).padStart(2, "0"); };
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  }
+
+  function openEditOrderModal(orderId) {
+    var order = orders.find(function (o) { return o.id === orderId; });
+    if (!order) return;
+    editOrderId = orderId;
+    editOrderLines = order.items.map(function (li) { return Object.assign({}, li); });
+    editOrderPayment = order.paymentMethod || "Cash";
+    editOrderNote = order.note || "";
+    editOrderTimestamp = order.timestamp;
+    renderEditOrderModal();
+  }
+
+  function renderEditOrderModal() {
+    var total = editOrderLines.reduce(function (s, l) { return s + l.price * l.qty; }, 0);
+    var html = '<div class="dc-modal-overlay" data-action="close-modal-bg">';
+    html += '<div class="dc-modal">';
+    html += '<div class="dc-modal-head"><h3>' + icon("pencil", 17) + '&nbsp;Edit order</h3>' +
+      '<button class="dc-icon-btn" data-action="close-modal">' + icon("x", 18) + '</button></div>';
+    html += '<div class="dc-cart-lines" id="dc-editorder-lines">' + editOrderLinesHtml() + '</div>';
+    html += '<div class="dc-form-field"><label>Date &amp; time</label><input type="datetime-local" id="dc-editorder-datetime" value="' + toDatetimeLocalValue(editOrderTimestamp) + '"></div>';
+    html += '<div class="dc-form-field"><label>Payment method</label><div class="dc-pill-row" id="dc-editorder-payment-pills">';
+    PAYMENT_METHODS.forEach(function (m) {
+      html += '<button class="dc-pill' + (editOrderPayment === m ? " dc-pill-active" : "") + '" data-action="editorder-set-payment" data-method="' + m + '">' + m + '</button>';
+    });
+    html += '</div></div>';
+    html += '<div class="dc-form-field"><label>Note (optional)</label><input id="dc-editorder-note" value="' + escapeHtml(editOrderNote) + '" placeholder="e.g. regular customer"></div>';
+    html += '<div class="dc-cart-total-row" id="dc-editorder-total-row"><span>Total</span><span>' + currency(total) + '</span></div>';
+    html += '<div class="dc-cart-actions">';
+    html += '<button class="dc-btn-secondary dc-btn-clear" data-action="open-delete-order-confirm">' + icon("trash", 15) + ' Delete order</button>';
+    html += '<button class="dc-btn-primary dc-btn-full" data-action="save-edited-order" ' + (editOrderLines.length === 0 ? "disabled" : "") + '>Save changes</button>';
+    html += '</div></div></div>';
+    document.getElementById("dc-modal-root").innerHTML = html;
+    document.getElementById("dc-editorder-note").addEventListener("input", function (e) { editOrderNote = e.target.value; });
+    document.getElementById("dc-editorder-datetime").addEventListener("input", function (e) {
+      var parsed = new Date(e.target.value).getTime();
+      if (!isNaN(parsed)) editOrderTimestamp = parsed;
+    });
+  }
+
+  function editOrderLinesHtml() {
+    if (editOrderLines.length === 0) return '<p class="dc-muted">No items left — use Delete order to remove it entirely.</p>';
+    return editOrderLines.map(function (l, idx) {
+      return '<div class="dc-cart-line">' +
+        '<div class="dc-cart-line-name">' + escapeHtml(l.name) + '</div>' +
+        '<div class="dc-qty-stepper">' +
+        '<button data-action="editorder-qty" data-idx="' + idx + '" data-delta="-1">' + icon("minus", 14) + '</button>' +
+        '<span>' + l.qty + '</span>' +
+        '<button data-action="editorder-qty" data-idx="' + idx + '" data-delta="1">' + icon("plus", 14) + '</button>' +
+        '</div>' +
+        '<div class="dc-cart-line-price">' + currency(l.price * l.qty) + '</div>' +
+        '<button class="dc-icon-btn dc-icon-btn-danger" data-action="editorder-remove-line" data-idx="' + idx + '">' + icon("trash", 14) + '</button>' +
+        '</div>';
+    }).join("");
+  }
+
+  function refreshEditOrderModal() {
+    var total = editOrderLines.reduce(function (s, l) { return s + l.price * l.qty; }, 0);
+    var linesEl = document.getElementById("dc-editorder-lines");
+    var totalEl = document.getElementById("dc-editorder-total-row");
+    var saveBtn = document.querySelector('[data-action="save-edited-order"]');
+    if (linesEl) linesEl.innerHTML = editOrderLinesHtml();
+    if (totalEl) totalEl.innerHTML = "<span>Total</span><span>" + currency(total) + "</span>";
+    if (saveBtn) saveBtn.disabled = editOrderLines.length === 0;
+  }
+
+  function editOrderChangeQty(idx, delta) {
+    if (!editOrderLines[idx]) return;
+    editOrderLines[idx].qty = Math.max(1, editOrderLines[idx].qty + delta);
+    refreshEditOrderModal();
+  }
+
+  function editOrderRemoveLine(idx) {
+    editOrderLines.splice(idx, 1);
+    refreshEditOrderModal();
+  }
+
+  function saveEditedOrder() {
+    if (!editOrderId || editOrderLines.length === 0) return;
+    orders = orders.map(function (o) {
+      if (o.id !== editOrderId) return o;
+      return Object.assign({}, o, {
+        items: editOrderLines,
+        total: editOrderLines.reduce(function (s, l) { return s + l.price * l.qty; }, 0),
+        paymentMethod: editOrderPayment,
+        note: editOrderNote,
+        timestamp: editOrderTimestamp
+      });
+    });
+    saveOrders();
+    uploadDriveFileNow();
+    editOrderId = null;
+    closeModal();
+    refreshTabBadges();
+    renderTabContent();
+    showToast("Order updated");
+  }
+
+  function openDeleteOrderConfirm() {
+    var html = '<div class="dc-modal-overlay" data-action="close-modal-bg">';
+    html += '<div class="dc-modal">';
+    html += '<div class="dc-modal-head"><h3>Delete this order?</h3><button class="dc-icon-btn" data-action="close-modal">' + icon("x", 18) + '</button></div>';
+    html += '<p class="dc-muted">This removes it completely from your sales history and Live Orders. This can\u2019t be undone.</p>';
+    html += '<div class="dc-modal-actions"><button class="dc-btn-secondary" data-action="close-modal">Cancel</button>' +
+      '<button class="dc-btn-primary" data-action="confirm-delete-order">Yes, delete order</button></div>';
+    html += '</div></div>';
+    document.getElementById("dc-modal-root").innerHTML = html;
+  }
+
+  function deleteEditedOrder() {
+    if (!editOrderId) return;
+    orders = orders.filter(function (o) { return o.id !== editOrderId; });
+    saveOrders();
+    uploadDriveFileNow();
+    editOrderId = null;
+    closeModal();
+    refreshTabBadges();
+    renderTabContent();
+    showToast("Order deleted");
+  }
+
   function openItemForm(item) {
     editingItemId = item ? item.id : null;
     formImage = item ? (item.image || "") : "";
@@ -1381,6 +1516,18 @@
     else if (action === "disconnect-drive") { disconnectDrive(); }
     else if (action === "open-reset-confirm") { openResetConfirmModal(); }
     else if (action === "confirm-reset-sales") { resetSalesData(); }
+    else if (action === "edit-order") { openEditOrderModal(id); }
+    else if (action === "editorder-qty") { editOrderChangeQty(Number(el.getAttribute("data-idx")), Number(el.getAttribute("data-delta"))); }
+    else if (action === "editorder-remove-line") { editOrderRemoveLine(Number(el.getAttribute("data-idx"))); }
+    else if (action === "editorder-set-payment") {
+      editOrderPayment = el.getAttribute("data-method");
+      document.querySelectorAll("#dc-editorder-payment-pills .dc-pill").forEach(function (p) {
+        p.classList.toggle("dc-pill-active", p.getAttribute("data-method") === editOrderPayment);
+      });
+    }
+    else if (action === "save-edited-order") { saveEditedOrder(); }
+    else if (action === "open-delete-order-confirm") { openDeleteOrderConfirm(); }
+    else if (action === "confirm-delete-order") { deleteEditedOrder(); }
     else if (action === "save-shop-name") {
       var v = document.getElementById("dc-shop-name-input").value.trim();
       shopName = v || DEFAULT_SHOP_NAME;
